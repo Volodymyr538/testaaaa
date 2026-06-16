@@ -154,6 +154,532 @@ def init_db() -> None:
             title       TEXT,
             description TEXT,
             promo_code  TEXT,
+            category    TEXT DEFAULT 'hot_deal',
+            active      INTEGER DEFAULT 1,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS carts (
+            user_id    INTEGER PRIMARY KEY,
+            items_json TEXT DEFAULT '[]',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS staff (
+            user_id  INTEGER PRIMARY KEY,
+            username TEXT,
+            role     TEXT DEFAULT 'support',
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            user_name  TEXT,
+            message    TEXT,
+            type       TEXT DEFAULT 'support',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+    """)
+    # Приветствие по умолчанию
+    conn.execute(
+        "INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)",
+        ("welcome_text", "☀️ Добро пожаловать в Burger King Roblox!")
+    )
+    # Миграция: добавляем столбец category, если базы созданы старой версией бота
+    try:
+        conn.execute("ALTER TABLE promotions ADD COLUMN category TEXT DEFAULT 'hot_deal'")
+    except sqlite3.OperationalError:
+        pass  # столбец уже существует
+    conn.commit()
+    conn.close()
+
+
+# ── Helpers ───────────────────────────────────────────────────
+
+def db_upsert_user(user_id: int, username: str, full_name: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?,?,?)",
+        (user_id, username, full_name),
+    )
+    conn.commit(); conn.close()
+
+def db_user_count() -> int:
+    conn = get_conn()
+    r = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()
+    conn.close(); return r["c"]
+
+def db_create_order(user_id: int, user_name: str, items: str, total: float) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO orders (user_id, user_name, items, total) VALUES (?,?,?,?)",
+        (user_id, user_name, items, total),
+    )
+    oid = cur.lastrowid; conn.commit(); conn.close(); return oid
+
+def db_order_count() -> int:
+    conn = get_conn()
+    r = conn.execute("SELECT COUNT(*) AS c FROM orders").fetchone()
+    conn.close(); return r["c"]
+
+def db_add_review(user_id: int, user_name: str, text: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO reviews (user_id, user_name, text) VALUES (?,?,?)",
+        (user_id, user_name, text),
+    )
+    conn.commit(); conn.close()
+
+def db_get_reviews(limit: int = 10) -> list:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM reviews ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close(); return rows
+
+def db_review_count() -> int:
+    conn = get_conn()
+    r = conn.execute("SELECT COUNT(*) AS c FROM reviews").fetchone()
+    conn.close(); return r["c"]
+
+def db_add_promo(title: str, desc: str, code: str, category: str = "hot_deal") -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO promotions (title, description, promo_code, category) VALUES (?,?,?,?)",
+        (title, desc, code, category),
+    )
+    conn.commit(); conn.close()
+
+def db_get_promos(category: str | None = None) -> list:
+    conn = get_conn()
+    if category:
+        rows = conn.execute(
+            "SELECT * FROM promotions WHERE active=1 AND category=? ORDER BY created_at DESC",
+            (category,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM promotions WHERE active=1 ORDER BY created_at DESC"
+        ).fetchall()
+    conn.close(); return rows
+
+# ── Корзина (хранится в БД, переживает перезапуск бота) ───────
+
+def db_get_cart(user_id: int) -> list:
+    import json
+    conn = get_conn()
+    r = conn.execute("SELECT items_json FROM carts WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    if not r:
+        return []
+    try:
+        return json.loads(r["items_json"])
+    except (ValueError, TypeError):
+        return []
+
+def db_set_cart(user_id: int, items: list) -> None:
+    import json
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO carts (user_id, items_json, updated_at) VALUES (?,?,CURRENT_TIMESTAMP) "
+        "ON CONFLICT(user_id) DO UPDATE SET items_json=excluded.items_json, updated_at=CURRENT_TIMESTAMP",
+        (user_id, json.dumps(items)),
+    )
+    conn.commit(); conn.close()
+
+def db_add_staff(user_id: int, username: str, role: str = "support") -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO staff (user_id, username, role) VALUES (?,?,?)",
+        (user_id, username, role),
+    )
+    conn.commit(); conn.close()
+
+def db_remove_staff(user_id: int) -> None:
+    conn = get_conn()
+    conn.execute("DELETE FROM staff WHERE user_id=?", (user_id,))
+    conn.commit(); conn.close()
+
+def db_get_staff() -> list:
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM staff").fetchall()
+    conn.close(); return rows
+
+def db_add_ticket(user_id: int, user_name: str, message: str, ttype: str = "support") -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO support_tickets (user_id, user_name, message, type) VALUES (?,?,?,?)",
+        (user_id, user_name, message, ttype),
+    )
+    conn.commit(); conn.close()
+
+def db_get_setting(key: str) -> str:
+    conn = get_conn()
+    r = conn.execute("SELECT value FROM bot_settings WHERE key=?", (key,)).fetchone()
+    conn.close(); return r["value"] if r else ""
+
+def db_set_setting(key: str, value: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?,?)", (key, value)
+    )
+    conn.commit(); conn.close()
+
+def db_get_all_users() -> list:
+    conn = get_conn()
+    rows = conn.execute("SELECT user_id FROM users").fetchall()
+    conn.close(); return rows
+
+# ═══════════════════════════════════════════════════════════════
+#  КЛАВИАТУРЫ
+# ═══════════════════════════════════════════════════════════════
+
+def kb_main(is_admin: bool = False) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🍟 Меню",      callback_data="menu"),
+        InlineKeyboardButton(text="🛒 Заказать",  callback_data="order"),
+    )
+    b.row(
+        InlineKeyboardButton(text="🎁 Акции",     callback_data="promotions"),
+        InlineKeyboardButton(text="🆘 Поддержка", callback_data="support"),
+    )
+    b.row(InlineKeyboardButton(text="⭐ Отзывы",  callback_data="reviews"))
+    if is_admin:
+        b.row(InlineKeyboardButton(text="✅ Админка", callback_data="admin"))
+    return b.as_markup()
+
+def kb_menu() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🍔 Бургеры", callback_data="cat_burgers"),
+        InlineKeyboardButton(text="🍟 Закуски", callback_data="cat_snacks"),
+    )
+    b.row(
+        InlineKeyboardButton(text="🥤 Напитки",  callback_data="cat_drinks"),
+        InlineKeyboardButton(text="🍦 Десерты",  callback_data="cat_desserts"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_category(items: list[dict], cat_key: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for i, item in enumerate(items):
+        b.row(InlineKeyboardButton(
+            text=f"{item['name']} — {item['price']}₽",
+            callback_data=f"add_{cat_key}_{i}",
+        ))
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    return b.as_markup()
+
+def kb_order() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📋 Корзина",        callback_data="cart"))
+    b.row(InlineKeyboardButton(text="💳 Оформить заказ", callback_data="checkout"))
+    b.row(InlineKeyboardButton(text="❌ Очистить корзину", callback_data="clear_cart"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",          callback_data="back_main"))
+    return b.as_markup()
+
+def kb_checkout() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="✅ Подтвердить заказ", callback_data="confirm_order"))
+    b.row(InlineKeyboardButton(text="❌ Отменить заказ",    callback_data="cancel_order"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",             callback_data="order"))
+    return b.as_markup()
+
+def kb_delivery() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🏠 Самовывоз", callback_data="dlv_pickup"),
+        InlineKeyboardButton(text="🚚 Доставка",  callback_data="dlv_delivery"),
+    )
+    return b.as_markup()
+
+def kb_promotions() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🎟 Промокоды",         callback_data="promo_codes"),
+        InlineKeyboardButton(text="🔥 Горячие предложения", callback_data="hot_deals"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_support() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="❓ Частые вопросы",         callback_data="faq"))
+    b.row(InlineKeyboardButton(text="📩 Связаться с поддержкой", callback_data="contact_support"))
+    b.row(InlineKeyboardButton(text="⚠️ Сообщить о проблеме",   callback_data="report_problem"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",                  callback_data="back_main"))
+    return b.as_markup()
+
+def kb_reviews() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="✍️ Оставить отзыв",    callback_data="leave_review"),
+        InlineKeyboardButton(text="📖 Посмотреть отзывы", callback_data="view_reviews"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_admin() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📢 Рассылка",                       callback_data="adm_broadcast"))
+    b.row(InlineKeyboardButton(text="🔥 Добавить горячее предложение",   callback_data="adm_add_hotdeal"))
+    b.row(InlineKeyboardButton(text="🎟 Добавить промокод",              callback_data="adm_add_promocode"))
+    b.row(InlineKeyboardButton(text="📊 Статистика",                     callback_data="adm_stats"))
+    b.row(InlineKeyboardButton(text="👥 Управление персоналом",          callback_data="adm_staff"))
+    b.row(InlineKeyboardButton(text="⚙️ Настройки",                     callback_data="adm_settings"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",                          callback_data="back_main"))
+    return b.as_markup()
+
+def kb_staff() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➕ Добавить сотрудника", callback_data="staff_add"))
+    b.row(InlineKeyboardButton(text="➖ Удалить сотрудника",  callback_data="staff_remove"))
+    b.row(InlineKeyboardButton(text="📋 Список персонала",    callback_data="staff_list"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",               callback_data="admin"))
+    return b.as_markup()
+
+def kb_back(target: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=target)]
+    ])
+
+def kb_cancel_reply() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+# ═══════════════════════════════════════════════════════════════
+#  FSM STATES
+# ═══════════════════════════════════════════════════════════════
+
+class OrderSG(StatesGroup):
+    waiting_name     = State()
+    waiting_delivery = State()
+
+class ReviewSG(StatesGroup):
+    waiting_text = State()
+
+class SupportSG(StatesGroup):
+    waiting_message = State()
+
+class ReportSG(StatesGroup):
+    waiting_message = State()
+
+class AdminSG(StatesGroup):
+    broadcast       = State()
+    promo_title     = State()
+    promo_desc      = State()
+    promo_code      = State()
+    staff_add_id    = State()
+    staff_add_role  = State()
+    staff_remove_id = State()
+    settings_key    = State()
+    settings_value  = State()
+
+# ═══════════════════════════════════════════════════════════════
+#  ROUTER & HELPERS
+# ═══════════════════════════════════════════════════════════════
+
+router = Router()
+
+WELCOME = (
+    "🍔 <b>Добро пожаловать в Burger King Roblox!</b>\n\n"
+    "☀️ Здесь вы можете:\n"
+    "• Ознакомиться с меню ресторана\n"
+    "• Оформить заказ\n"
+    "• Узнать о действующих акциях\n"
+    "• Получить помощь от поддержки\n"
+    "• Оставить отзыв\n\n"
+    "Выберите раздел:"
+)
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+async def send_main(target: Message | CallbackQuery, edit: bool = False) -> None:
+    admin = is_admin(
+        target.from_user.id if isinstance(target, Message) else target.from_user.id
+    )
+    kb = kb_main(admin)
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(WELCOME, reply_markup=kb, parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(WELCOME, reply_markup=kb, parse_mode="HTML")
+
+# ═══════════════════════════════════════════════════════════════
+#  /start
+# ═══════════════════════════════════════════════════════════════
+
+@router.message(CommandStart())
+async def cmd_start(msg: Message) -> None:
+    db_upsert_user(msg.from_user.id, msg.from_user.username or "", msg.from_user.full_name)
+    await send_main(msg)
+
+@router.callback_query(F.data == "back_main")
+async def cb_back_main(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await send_main(call)
+
+# ═══════════════════════════════════════════════════════════════
+#  МЕНЮ
+# ═══════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "menu")
+async def cb_menu(call: CallbackQuery) -> None:
+    await call.message.edit_text(
+        "🍟 <b>Меню ресторана</b>\n\nВыберите категорию:",
+        reply_markup=kb_menu(), parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data.in_(CATEGORY_CB.keys()))
+async def cb_category(call: CallbackQuery) -> None:
+    cat_key = CATEGORY_CB[call.data]
+    cat = MENU[cat_key]
+    lines = [f"{cat['emoji']} <b>{cat['title']}</b>\n"]
+    for item in cat["items"]:
+        lines.append(f"• {item['name']} — <b>{item['price']}₽</b>")
+    lines.append("\n👆 Нажми на блюдо, чтобы добавить в корзину 🛒")
+    await call.message.edit_text(
+        "\n".join(lines),
+        reply_markup=kb_category(cat["items"], cat_key),
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data.startswith("add_"))
+async def cb_add_item(call: CallbackQuery) -> None:
+    _, cat_key, idx_str = call.data.split("_", 2)
+    item = MENU[cat_key]["items"][int(idx_str)]
+    cart = db_get_cart(call.from_user.id)
+    cart.append(item)
+    db_se XDORDERS_CHAT_ID: int | None = None
+
+DB_PATH = "database.db"
+
+# ═══════════════════════════════════════════════════════════════
+#  ДАННЫЕ МЕНЮ
+# ═══════════════════════════════════════════════════════════════
+
+MENU: dict[str, dict] = {
+    "burgers": {
+        "emoji": "🍔",
+        "title": "Бургеры",
+        "items": [
+            {"name": "Воппер",            "price": 299},
+            {"name": "Чизбургер",         "price": 149},
+            {"name": "Двойной чизбургер", "price": 199},
+            {"name": "Биг Кинг",          "price": 349},
+            {"name": "Кинг Роял",         "price": 399},
+        ],
+    },
+    "snacks": {
+        "emoji": "🍟",
+        "title": "Закуски",
+        "items": [
+            {"name": "Картофель фри",           "price": 99},
+            {"name": "Картофель по-деревенски", "price": 119},
+            {"name": "Луковые кольца",          "price": 109},
+            {"name": "Наггетсы",                "price": 129},
+        ],
+    },
+    "drinks": {
+        "emoji": "🥤",
+        "title": "Напитки",
+        "items": [
+            {"name": "Кола",   "price": 79},
+            {"name": "Спрайт", "price": 79},
+            {"name": "Фанта",  "price": 79},
+            {"name": "Сок",    "price": 89},
+            {"name": "Вода",   "price": 49},
+        ],
+    },
+    "desserts": {
+        "emoji": "🍦",
+        "title": "Десерты",
+        "items": [
+            {"name": "Мороженое",        "price": 89},
+            {"name": "Молочный коктейль", "price": 149},
+            {"name": "Пирожки",          "price": 69},
+            {"name": "Донаты",           "price": 79},
+        ],
+    },
+}
+
+CATEGORY_CB: dict[str, str] = {
+    "cat_burgers":  "burgers",
+    "cat_snacks":   "snacks",
+    "cat_drinks":   "drinks",
+    "cat_desserts": "desserts",
+}
+
+HOT_DEALS = [
+    "🔥 Скидка 20% на все комбо-наборы!",
+    "🔥 Бесплатный напиток при покупке двух бургеров!",
+    "🔥 Подарок за заказ от 500₽!",
+]
+
+FAQ_TEXT = (
+    "❓ <b>Частые вопросы</b>\n\n"
+    "<b>Как оформить заказ?</b>\n"
+    "Перейди в «🍟 Меню», выбери блюда — они добавятся в корзину. "
+    "Затем нажми «🛒 Заказать» → «💳 Оформить заказ».\n\n"
+    "<b>Как отменить заказ?</b>\n"
+    "После перехода к оформлению нажми «❌ Отменить заказ».\n\n"
+    "<b>Как использовать промокод?</b>\n"
+    "Перейди в «🎁 Акции» → «🎟 Промокоды» и скопируй нужный код. "
+    "Сообщи его при оформлении заказа.\n\n"
+    "<b>Как связаться с сотрудником?</b>\n"
+    "Перейди в «🆘 Поддержка» → «📩 Связаться с поддержкой»."
+)
+
+# ═══════════════════════════════════════════════════════════════
+#  БАЗА ДАННЫХ
+# ═══════════════════════════════════════════════════════════════
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    conn = get_conn()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id   INTEGER PRIMARY KEY,
+            username  TEXT,
+            full_name TEXT,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS orders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            user_name  TEXT,
+            items      TEXT,
+            total      REAL,
+            status     TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS reviews (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            user_name  TEXT,
+            text       TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS promotions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT,
+            description TEXT,
+            promo_code  TEXT,
             active      INTEGER DEFAULT 1,
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -557,7 +1083,569 @@ async def cb_clear_cart(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer("🗑 Корзина очищена!", show_alert=True)
     await call.message.edit_text(
         "🛒 <b>Корзина пуста.</b>\n\nДобавь блюда из меню:",
-        reply_markup=kb_order(), parse_mode="HTML",
+        re"""
+Burger King Roblox — Telegram Bot
+Один файл: aiogram 3.x + SQLite
+"""
+
+import asyncio
+import logging
+import sqlite3
+from typing import Any
+
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+# ═══════════════════════════════════════════════════════════════
+#  КОНФИГУРАЦИЯ
+# ═══════════════════════════════════════════════════════════════
+
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+
+# Telegram user_id администраторов
+ADMIN_IDS: list[int] = [123456789]
+
+# Если хочешь получать уведомления о заказах — укажи chat_id, иначе None
+ORDERS_CHAT_ID: int | None = None
+
+DB_PATH = "database.db"
+
+# ═══════════════════════════════════════════════════════════════
+#  ДАННЫЕ МЕНЮ
+# ═══════════════════════════════════════════════════════════════
+
+MENU: dict[str, dict] = {
+    "burgers": {
+        "emoji": "🍔",
+        "title": "Бургеры",
+        "items": [
+            {"name": "Воппер",            "price": 299},
+            {"name": "Чизбургер",         "price": 149},
+            {"name": "Двойной чизбургер", "price": 199},
+            {"name": "Биг Кинг",          "price": 349},
+            {"name": "Кинг Роял",         "price": 399},
+        ],
+    },
+    "snacks": {
+        "emoji": "🍟",
+        "title": "Закуски",
+        "items": [
+            {"name": "Картофель фри",           "price": 99},
+            {"name": "Картофель по-деревенски", "price": 119},
+            {"name": "Луковые кольца",          "price": 109},
+            {"name": "Наггетсы",                "price": 129},
+        ],
+    },
+    "drinks": {
+        "emoji": "🥤",
+        "title": "Напитки",
+        "items": [
+            {"name": "Кола",   "price": 79},
+            {"name": "Спрайт", "price": 79},
+            {"name": "Фанта",  "price": 79},
+            {"name": "Сок",    "price": 89},
+            {"name": "Вода",   "price": 49},
+        ],
+    },
+    "desserts": {
+        "emoji": "🍦",
+        "title": "Десерты",
+        "items": [
+            {"name": "Мороженое",        "price": 89},
+            {"name": "Молочный коктейль", "price": 149},
+            {"name": "Пирожки",          "price": 69},
+            {"name": "Донаты",           "price": 79},
+        ],
+    },
+}
+
+CATEGORY_CB: dict[str, str] = {
+    "cat_burgers":  "burgers",
+    "cat_snacks":   "snacks",
+    "cat_drinks":   "drinks",
+    "cat_desserts": "desserts",
+}
+
+HOT_DEALS = [
+    "🔥 Скидка 20% на все комбо-наборы!",
+    "🔥 Бесплатный напиток при покупке двух бургеров!",
+    "🔥 Подарок за заказ от 500₽!",
+]
+
+FAQ_TEXT = (
+    "❓ <b>Частые вопросы</b>\n\n"
+    "<b>Как оформить заказ?</b>\n"
+    "Перейди в «🍟 Меню», выбери блюда — они добавятся в корзину. "
+    "Затем нажми «🛒 Заказать» → «💳 Оформить заказ».\n\n"
+    "<b>Как отменить заказ?</b>\n"
+    "После перехода к оформлению нажми «❌ Отменить заказ».\n\n"
+    "<b>Как использовать промокод?</b>\n"
+    "Перейди в «🎁 Акции» → «🎟 Промокоды» и скопируй нужный код. "
+    "Сообщи его при оформлении заказа.\n\n"
+    "<b>Как связаться с сотрудником?</b>\n"
+    "Перейди в «🆘 Поддержка» → «📩 Связаться с поддержкой»."
+)
+
+# ═══════════════════════════════════════════════════════════════
+#  БАЗА ДАННЫХ
+# ═══════════════════════════════════════════════════════════════
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    conn = get_conn()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id   INTEGER PRIMARY KEY,
+            username  TEXT,
+            full_name TEXT,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS orders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            user_name  TEXT,
+            items      TEXT,
+            total      REAL,
+            status     TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS reviews (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            user_name  TEXT,
+            text       TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS promotions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT,
+            description TEXT,
+            promo_code  TEXT,
+            category    TEXT DEFAULT 'hot_deal',
+            active      INTEGER DEFAULT 1,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS carts (
+            user_id    INTEGER PRIMARY KEY,
+            items_json TEXT DEFAULT '[]',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS staff (
+            user_id  INTEGER PRIMARY KEY,
+            username TEXT,
+            role     TEXT DEFAULT 'support',
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER,
+            user_name  TEXT,
+            message    TEXT,
+            type       TEXT DEFAULT 'support',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+    """)
+    # Приветствие по умолчанию
+    conn.execute(
+        "INSERT OR IGNORE INTO bot_settings (key, value) VALUES (?, ?)",
+        ("welcome_text", "☀️ Добро пожаловать в Burger King Roblox!")
+    )
+    # Миграция: добавляем столбец category, если базы созданы старой версией бота
+    try:
+        conn.execute("ALTER TABLE promotions ADD COLUMN category TEXT DEFAULT 'hot_deal'")
+    except sqlite3.OperationalError:
+        pass  # столбец уже существует
+    conn.commit()
+    conn.close()
+
+
+# ── Helpers ───────────────────────────────────────────────────
+
+def db_upsert_user(user_id: int, username: str, full_name: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?,?,?)",
+        (user_id, username, full_name),
+    )
+    conn.commit(); conn.close()
+
+def db_user_count() -> int:
+    conn = get_conn()
+    r = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()
+    conn.close(); return r["c"]
+
+def db_create_order(user_id: int, user_name: str, items: str, total: float) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO orders (user_id, user_name, items, total) VALUES (?,?,?,?)",
+        (user_id, user_name, items, total),
+    )
+    oid = cur.lastrowid; conn.commit(); conn.close(); return oid
+
+def db_order_count() -> int:
+    conn = get_conn()
+    r = conn.execute("SELECT COUNT(*) AS c FROM orders").fetchone()
+    conn.close(); return r["c"]
+
+def db_add_review(user_id: int, user_name: str, text: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO reviews (user_id, user_name, text) VALUES (?,?,?)",
+        (user_id, user_name, text),
+    )
+    conn.commit(); conn.close()
+
+def db_get_reviews(limit: int = 10) -> list:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM reviews ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close(); return rows
+
+def db_review_count() -> int:
+    conn = get_conn()
+    r = conn.execute("SELECT COUNT(*) AS c FROM reviews").fetchone()
+    conn.close(); return r["c"]
+
+def db_add_promo(title: str, desc: str, code: str, category: str = "hot_deal") -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO promotions (title, description, promo_code, category) VALUES (?,?,?,?)",
+        (title, desc, code, category),
+    )
+    conn.commit(); conn.close()
+
+def db_get_promos(category: str | None = None) -> list:
+    conn = get_conn()
+    if category:
+        rows = conn.execute(
+            "SELECT * FROM promotions WHERE active=1 AND category=? ORDER BY created_at DESC",
+            (category,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM promotions WHERE active=1 ORDER BY created_at DESC"
+        ).fetchall()
+    conn.close(); return rows
+
+# ── Корзина (хранится в БД, переживает перезапуск бота) ───────
+
+def db_get_cart(user_id: int) -> list:
+    import json
+    conn = get_conn()
+    r = conn.execute("SELECT items_json FROM carts WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    if not r:
+        return []
+    try:
+        return json.loads(r["items_json"])
+    except (ValueError, TypeError):
+        return []
+
+def db_set_cart(user_id: int, items: list) -> None:
+    import json
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO carts (user_id, items_json, updated_at) VALUES (?,?,CURRENT_TIMESTAMP) "
+        "ON CONFLICT(user_id) DO UPDATE SET items_json=excluded.items_json, updated_at=CURRENT_TIMESTAMP",
+        (user_id, json.dumps(items)),
+    )
+    conn.commit(); conn.close()
+
+def db_add_staff(user_id: int, username: str, role: str = "support") -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO staff (user_id, username, role) VALUES (?,?,?)",
+        (user_id, username, role),
+    )
+    conn.commit(); conn.close()
+
+def db_remove_staff(user_id: int) -> None:
+    conn = get_conn()
+    conn.execute("DELETE FROM staff WHERE user_id=?", (user_id,))
+    conn.commit(); conn.close()
+
+def db_get_staff() -> list:
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM staff").fetchall()
+    conn.close(); return rows
+
+def db_add_ticket(user_id: int, user_name: str, message: str, ttype: str = "support") -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO support_tickets (user_id, user_name, message, type) VALUES (?,?,?,?)",
+        (user_id, user_name, message, ttype),
+    )
+    conn.commit(); conn.close()
+
+def db_get_setting(key: str) -> str:
+    conn = get_conn()
+    r = conn.execute("SELECT value FROM bot_settings WHERE key=?", (key,)).fetchone()
+    conn.close(); return r["value"] if r else ""
+
+def db_set_setting(key: str, value: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?,?)", (key, value)
+    )
+    conn.commit(); conn.close()
+
+def db_get_all_users() -> list:
+    conn = get_conn()
+    rows = conn.execute("SELECT user_id FROM users").fetchall()
+    conn.close(); return rows
+
+# ═══════════════════════════════════════════════════════════════
+#  КЛАВИАТУРЫ
+# ═══════════════════════════════════════════════════════════════
+
+def kb_main(is_admin: bool = False) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🍟 Меню",      callback_data="menu"),
+        InlineKeyboardButton(text="🛒 Заказать",  callback_data="order"),
+    )
+    b.row(
+        InlineKeyboardButton(text="🎁 Акции",     callback_data="promotions"),
+        InlineKeyboardButton(text="🆘 Поддержка", callback_data="support"),
+    )
+    b.row(InlineKeyboardButton(text="⭐ Отзывы",  callback_data="reviews"))
+    if is_admin:
+        b.row(InlineKeyboardButton(text="✅ Админка", callback_data="admin"))
+    return b.as_markup()
+
+def kb_menu() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🍔 Бургеры", callback_data="cat_burgers"),
+        InlineKeyboardButton(text="🍟 Закуски", callback_data="cat_snacks"),
+    )
+    b.row(
+        InlineKeyboardButton(text="🥤 Напитки",  callback_data="cat_drinks"),
+        InlineKeyboardButton(text="🍦 Десерты",  callback_data="cat_desserts"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_category(items: list[dict], cat_key: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for i, item in enumerate(items):
+        b.row(InlineKeyboardButton(
+            text=f"{item['name']} — {item['price']}₽",
+            callback_data=f"add_{cat_key}_{i}",
+        ))
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    return b.as_markup()
+
+def kb_order() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📋 Корзина",        callback_data="cart"))
+    b.row(InlineKeyboardButton(text="💳 Оформить заказ", callback_data="checkout"))
+    b.row(InlineKeyboardButton(text="❌ Очистить корзину", callback_data="clear_cart"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",          callback_data="back_main"))
+    return b.as_markup()
+
+def kb_checkout() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="✅ Подтвердить заказ", callback_data="confirm_order"))
+    b.row(InlineKeyboardButton(text="❌ Отменить заказ",    callback_data="cancel_order"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",             callback_data="order"))
+    return b.as_markup()
+
+def kb_delivery() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🏠 Самовывоз", callback_data="dlv_pickup"),
+        InlineKeyboardButton(text="🚚 Доставка",  callback_data="dlv_delivery"),
+    )
+    return b.as_markup()
+
+def kb_promotions() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🎟 Промокоды",         callback_data="promo_codes"),
+        InlineKeyboardButton(text="🔥 Горячие предложения", callback_data="hot_deals"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_support() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="❓ Частые вопросы",         callback_data="faq"))
+    b.row(InlineKeyboardButton(text="📩 Связаться с поддержкой", callback_data="contact_support"))
+    b.row(InlineKeyboardButton(text="⚠️ Сообщить о проблеме",   callback_data="report_problem"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",                  callback_data="back_main"))
+    return b.as_markup()
+
+def kb_reviews() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="✍️ Оставить отзыв",    callback_data="leave_review"),
+        InlineKeyboardButton(text="📖 Посмотреть отзывы", callback_data="view_reviews"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_admin() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📢 Рассылка",                       callback_data="adm_broadcast"))
+    b.row(InlineKeyboardButton(text="🔥 Добавить горячее предложение",   callback_data="adm_add_hotdeal"))
+    b.row(InlineKeyboardButton(text="🎟 Добавить промокод",              callback_data="adm_add_promocode"))
+    b.row(InlineKeyboardButton(text="📊 Статистика",                     callback_data="adm_stats"))
+    b.row(InlineKeyboardButton(text="👥 Управление персоналом",          callback_data="adm_staff"))
+    b.row(InlineKeyboardButton(text="⚙️ Настройки",                     callback_data="adm_settings"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",                          callback_data="back_main"))
+    return b.as_markup()
+
+def kb_staff() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➕ Добавить сотрудника", callback_data="staff_add"))
+    b.row(InlineKeyboardButton(text="➖ Удалить сотрудника",  callback_data="staff_remove"))
+    b.row(InlineKeyboardButton(text="📋 Список персонала",    callback_data="staff_list"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",               callback_data="admin"))
+    return b.as_markup()
+
+def kb_back(target: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=target)]
+    ])
+
+def kb_cancel_reply() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+# ═══════════════════════════════════════════════════════════════
+#  FSM STATES
+# ═══════════════════════════════════════════════════════════════
+
+class OrderSG(StatesGroup):
+    waiting_name     = State()
+    waiting_delivery = State()
+
+class ReviewSG(StatesGroup):
+    waiting_text = State()
+
+class SupportSG(StatesGroup):
+    waiting_message = State()
+
+class ReportSG(StatesGroup):
+    waiting_message = State()
+
+class AdminSG(StatesGroup):
+    broadcast       = State()
+    promo_title     = State()
+    promo_desc      = State()
+    promo_code      = State()
+    staff_add_id    = State()
+    staff_add_role  = State()
+    staff_remove_id = State()
+    settings_key    = State()
+    settings_value  = State()
+
+# ═══════════════════════════════════════════════════════════════
+#  ROUTER & HELPERS
+# ═══════════════════════════════════════════════════════════════
+
+router = Router()
+
+WELCOME = (
+    "🍔 <b>Добро пожаловать в Burger King Roblox!</b>\n\n"
+    "☀️ Здесь вы можете:\n"
+    "• Ознакомиться с меню ресторана\n"
+    "• Оформить заказ\n"
+    "• Узнать о действующих акциях\n"
+    "• Получить помощь от поддержки\n"
+    "• Оставить отзыв\n\n"
+    "Выберите раздел:"
+)
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+async def send_main(target: Message | CallbackQuery, edit: bool = False) -> None:
+    admin = is_admin(
+        target.from_user.id if isinstance(target, Message) else target.from_user.id
+    )
+    kb = kb_main(admin)
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(WELCOME, reply_markup=kb, parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(WELCOME, reply_markup=kb, parse_mode="HTML")
+
+# ═══════════════════════════════════════════════════════════════
+#  /start
+# ═══════════════════════════════════════════════════════════════
+
+@router.message(CommandStart())
+async def cmd_start(msg: Message) -> None:
+    db_upsert_user(msg.from_user.id, msg.from_user.username or "", msg.from_user.full_name)
+    await send_main(msg)
+
+@router.callback_query(F.data == "back_main")
+async def cb_back_main(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await send_main(call)
+
+# ═══════════════════════════════════════════════════════════════
+#  МЕНЮ
+# ═══════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "menu")
+async def cb_menu(call: CallbackQuery) -> None:
+    await call.message.edit_text(
+        "🍟 <b>Меню ресторана</b>\n\nВыберите категорию:",
+        reply_markup=kb_menu(), parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data.in_(CATEGORY_CB.keys()))
+async def cb_category(call: CallbackQuery) -> None:
+    cat_key = CATEGORY_CB[call.data]
+    cat = MENU[cat_key]
+    lines = [f"{cat['emoji']} <b>{cat['title']}</b>\n"]
+    for item in cat["items"]:
+        lines.append(f"• {item['name']} — <b>{item['price']}₽</b>")
+    lines.append("\n👆 Нажми на блюдо, чтобы добавить в корзину 🛒")
+    await call.message.edit_text(
+        "\n".join(lines),
+        reply_markup=kb_category(cat["items"], cat_key),
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data.startswith("add_"))
+async def cb_add_item(call: CallbackQuery) -> None:
+    _, cat_key, idx_str = call.data.split("_", 2)
+    item = MENU[cat_key]["items"][int(idx_str)]
+    cart = db_get_cart(call.from_user.id)
+    cart.append(item)
+    db_seply_markup=kb_order(), parse_mode="HTML",
     )
 
 @router.callback_query(F.data == "checkout")
