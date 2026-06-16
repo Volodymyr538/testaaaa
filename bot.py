@@ -31,7 +31,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 BOT_TOKEN = "8903935395:AAHWLIPYg1yFt0mI9pnZly3STFtblOJ4mCM"
 
 # Telegram user_id администраторов
-ADMIN_IDS: list[int] = [6465287831]
+ADMIN_IDS: list[int] = [8118030418]
 
 # Если хочешь получать уведомления о заказах — укажи chat_id, иначе None
 ORDERS_CHAT_ID: int | None = None
