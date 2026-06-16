@@ -541,6 +541,258 @@ async def cb_cart(call: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     cart: list = data.get("cart", [])
     if not cart:
+        await call.answer("🛒 Корзина пуста! Зайди в «Меню» и добавь блюда.", show_alert=True); return
+    lines = ["📋 <b>Ваша корзина:</b>\n"]
+    total = 0.0
+    for i, item in enumerate(cart, 1):
+        lines.append(f"{i}. {item['name']} — {item['price']}₽")
+        total += item["price"]
+    lines.append(f"\n💰 <b>Итого: {total:.0f}₽</b>")
+    await call.message.edit_text("\n".join(lines), reply_markup=kb_order(), parse_mode="HTML")
+    await call.answer()
+
+@router.callback_query(F.data == "clear_cart")
+async def cb_clear_cart(call: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(cart=[])
+    await call.answer("🗑 Корзина очищена!", show_alert=True)
+    await call.message.edit_text(
+        "🛒 <b>Корзина пуста.</b>\n\nДобавь блюда из меню:",
+        reply_markup=kb_order(), parseata="reviews"))
+    if is_admin:
+        b.row(InlineKeyboardButton(text="✅ Админка", callback_data="admin"))
+    return b.as_markup()
+
+def kb_menu() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🍔 Бургеры", callback_data="cat_burgers"),
+        InlineKeyboardButton(text="🍟 Закуски", callback_data="cat_snacks"),
+    )
+    b.row(
+        InlineKeyboardButton(text="🥤 Напитки",  callback_data="cat_drinks"),
+        InlineKeyboardButton(text="🍦 Десерты",  callback_data="cat_desserts"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_category(items: list[dict], cat_key: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for i, item in enumerate(items):
+        b.row(InlineKeyboardButton(
+            text=f"{item['name']} — {item['price']}₽",
+            callback_data=f"add_{cat_key}_{i}",
+        ))
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    return b.as_markup()
+
+def kb_order() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📋 Корзина",        callback_data="cart"))
+    b.row(InlineKeyboardButton(text="💳 Оформить заказ", callback_data="checkout"))
+    b.row(InlineKeyboardButton(text="❌ Очистить корзину", callback_data="clear_cart"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",          callback_data="back_main"))
+    return b.as_markup()
+
+def kb_checkout() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="✅ Подтвердить заказ", callback_data="confirm_order"))
+    b.row(InlineKeyboardButton(text="❌ Отменить заказ",    callback_data="cancel_order"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",             callback_data="order"))
+    return b.as_markup()
+
+def kb_delivery() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🏠 Самовывоз", callback_data="dlv_pickup"),
+        InlineKeyboardButton(text="🚚 Доставка",  callback_data="dlv_delivery"),
+    )
+    return b.as_markup()
+
+def kb_promotions() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🎟 Промокоды",         callback_data="promo_codes"),
+        InlineKeyboardButton(text="🔥 Горячие предложения", callback_data="hot_deals"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_support() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="❓ Частые вопросы",         callback_data="faq"))
+    b.row(InlineKeyboardButton(text="📩 Связаться с поддержкой", callback_data="contact_support"))
+    b.row(InlineKeyboardButton(text="⚠️ Сообщить о проблеме",   callback_data="report_problem"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",                  callback_data="back_main"))
+    return b.as_markup()
+
+def kb_reviews() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="✍️ Оставить отзыв",    callback_data="leave_review"),
+        InlineKeyboardButton(text="📖 Посмотреть отзывы", callback_data="view_reviews"),
+    )
+    b.row(InlineKeyboardButton(text="🔙 Назад", callback_data="back_main"))
+    return b.as_markup()
+
+def kb_admin() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="📢 Рассылка",              callback_data="adm_broadcast"))
+    b.row(InlineKeyboardButton(text="➕ Добавить акцию",         callback_data="adm_add_promo"))
+    b.row(InlineKeyboardButton(text="📊 Статистика",             callback_data="adm_stats"))
+    b.row(InlineKeyboardButton(text="👥 Управление персоналом",  callback_data="adm_staff"))
+    b.row(InlineKeyboardButton(text="⚙️ Настройки",             callback_data="adm_settings"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",                  callback_data="back_main"))
+    return b.as_markup()
+
+def kb_staff() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="➕ Добавить сотрудника", callback_data="staff_add"))
+    b.row(InlineKeyboardButton(text="➖ Удалить сотрудника",  callback_data="staff_remove"))
+    b.row(InlineKeyboardButton(text="📋 Список персонала",    callback_data="staff_list"))
+    b.row(InlineKeyboardButton(text="🔙 Назад",               callback_data="admin"))
+    return b.as_markup()
+
+def kb_back(target: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=target)]
+    ])
+
+def kb_cancel_reply() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+# ═══════════════════════════════════════════════════════════════
+#  FSM STATES
+# ═══════════════════════════════════════════════════════════════
+
+class OrderSG(StatesGroup):
+    waiting_name     = State()
+    waiting_delivery = State()
+
+class ReviewSG(StatesGroup):
+    waiting_text = State()
+
+class SupportSG(StatesGroup):
+    waiting_message = State()
+
+class ReportSG(StatesGroup):
+    waiting_message = State()
+
+class AdminSG(StatesGroup):
+    broadcast       = State()
+    promo_title     = State()
+    promo_desc      = State()
+    promo_code      = State()
+    staff_add_id    = State()
+    staff_add_role  = State()
+    staff_remove_id = State()
+    settings_key    = State()
+    settings_value  = State()
+
+# ═══════════════════════════════════════════════════════════════
+#  ROUTER & HELPERS
+# ═══════════════════════════════════════════════════════════════
+
+router = Router()
+
+WELCOME = (
+    "🍔 <b>Добро пожаловать в Burger King Roblox!</b>\n\n"
+    "☀️ Здесь вы можете:\n"
+    "• Ознакомиться с меню ресторана\n"
+    "• Оформить заказ\n"
+    "• Узнать о действующих акциях\n"
+    "• Получить помощь от поддержки\n"
+    "• Оставить отзыв\n\n"
+    "Выберите раздел:"
+)
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+async def send_main(target: Message | CallbackQuery, edit: bool = False) -> None:
+    admin = is_admin(
+        target.from_user.id if isinstance(target, Message) else target.from_user.id
+    )
+    kb = kb_main(admin)
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(WELCOME, reply_markup=kb, parse_mode="HTML")
+        await target.answer()
+    else:
+        await target.answer(WELCOME, reply_markup=kb, parse_mode="HTML")
+
+# ═══════════════════════════════════════════════════════════════
+#  /start
+# ═══════════════════════════════════════════════════════════════
+
+@router.message(CommandStart())
+async def cmd_start(msg: Message) -> None:
+    db_upsert_user(msg.from_user.id, msg.from_user.username or "", msg.from_user.full_name)
+    await send_main(msg)
+
+@router.callback_query(F.data == "back_main")
+async def cb_back_main(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await send_main(call)
+
+# ═══════════════════════════════════════════════════════════════
+#  МЕНЮ
+# ═══════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "menu")
+async def cb_menu(call: CallbackQuery) -> None:
+    await call.message.edit_text(
+        "🍟 <b>Меню ресторана</b>\n\nВыберите категорию:",
+        reply_markup=kb_menu(), parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data.in_(CATEGORY_CB.keys()))
+async def cb_category(call: CallbackQuery) -> None:
+    cat_key = CATEGORY_CB[call.data]
+    cat = MENU[cat_key]
+    lines = [f"{cat['emoji']} <b>{cat['title']}</b>\n"]
+    for item in cat["items"]:
+        lines.append(f"• {item['name']} — <b>{item['price']}₽</b>")
+    lines.append("\n👆 Нажми на блюдо, чтобы добавить в корзину 🛒")
+    await call.message.edit_text(
+        "\n".join(lines),
+        reply_markup=kb_category(cat["items"], cat_key),
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data.startswith("add_"))
+async def cb_add_item(call: CallbackQuery, state: FSMContext) -> None:
+    _, cat_key, idx_str = call.data.split("_", 2)
+    item = MENU[cat_key]["items"][int(idx_str)]
+    data = await state.get_data()
+    cart: list = data.get("cart", [])
+    cart.append(item)
+    await state.update_data(cart=cart)
+    await call.answer(f"✅ {item['name']} добавлен в корзину! (всего: {len(cart)})")
+
+# ═══════════════════════════════════════════════════════════════
+#  ЗАКАЗ / КОРЗИНА
+# ═══════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data == "order")
+async def cb_order(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    cart: list = data.get("cart", [])
+    await call.message.edit_text(
+        f"🛒 <b>Раздел заказов</b>\n\nТоваров в корзине: <b>{len(cart)}</b>\n\nВыбери действие:",
+        reply_markup=kb_order(), parse_mode="HTML",
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "cart")
+async def cb_cart(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    cart: list = data.get("cart", [])
+    if not cart:
         await call.answer("🛒 Корзина пуста!", show_alert=True); return
     lines = ["📋 <b>Ваша корзина:</b>\n"]
     total = 0.0
